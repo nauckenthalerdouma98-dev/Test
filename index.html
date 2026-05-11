@@ -2046,9 +2046,6 @@
             init();
         })();
 
-// Register service worker
-if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js');
 let deferredPrompt;
 
 window.addEventListener('beforeinstallprompt', (e) => {
@@ -2081,6 +2078,10 @@ window.addEventListener('appinstalled', () => {
   if (installContainer) installContainer.style.display = 'none';
   deferredPrompt = null;
 });
+
+// Register service worker
+if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js');
 }
 
     </script>
