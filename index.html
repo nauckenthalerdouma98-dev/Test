@@ -963,6 +963,9 @@
     </div>
     <div id="toastMessage" class="toast"></div>
 
+    <!-- Library for reading embedded metadata -->
+    <script src="https://cdn.jsdelivr.net/npm/music-metadata-browser@2.5.11/dist/index.min.js"></script>
+
     <script>
         (function() {
             if (!/Android|iPhone|iPad|iPod/i.test(navigator.userAgent) && !window.location.hostname.includes('localhost')) {
@@ -1097,7 +1100,10 @@
                 }
                 container.innerHTML = list.map((song) => `
                     <div class="song-row" data-id="${song.id}">
-                        <div class="song-art"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg></div>
+                        <div class="song-art">
+                            ${song.coverUrl ? `<img src="${song.coverUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:10px;" alt="">` :
+                            '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>'}
+                        </div>
                         <div class="song-details">
                             <div class="song-name">${escapeHtml(song.name)}${song.favorite ? ' <span style="color:var(--accent);font-size:11px;">&#9829;</span>' : ''}</div>
                             <div class="song-artist">${escapeHtml(song.artist)}</div>
@@ -1199,8 +1205,25 @@
                     document.getElementById('miniTitle').innerText = s.name;
                     document.getElementById('miniArtist').innerText = s.artist;
                     document.getElementById('npPlaylistName').innerText = s.artist;
+                    // Cover art
+                    const cover = s.coverUrl || 'icon.png';
+                    document.getElementById('miniThumb').src = cover;
+                    document.getElementById('npArt').src = cover;
                     updateAllPlayPauseIcons();
                     updateFavIcon();
+
+                    // Media Session API
+                    if ('mediaSession' in navigator) {
+                        const metadata = {
+                            title: s.name,
+                            artist: s.artist,
+                            album: s.album || '',
+                        };
+                        if (s.coverUrl) {
+                            metadata.artwork = [{ src: s.coverUrl, sizes: '512x512', type: 'image/png' }];
+                        }
+                        navigator.mediaSession.metadata = new MediaMetadata(metadata);
+                    }
                 }
             }
 
@@ -1255,8 +1278,12 @@
                     const tx = db.transaction(['songs', 'playlists'], 'readwrite');
                     const songStore = tx.objectStore('songs');
                     songsDB.forEach(s => {
-                        if (s.blob) songStore.put({ id: s.id, name: s.name, artist: s.artist, blob: s.blob,
-                            favorite: s.favorite || false });
+                        if (s.blob) {
+                            const record = { id: s.id, name: s.name, artist: s.artist, album: s.album || '', blob: s.blob,
+                                favorite: s.favorite || false };
+                            if (s.coverBlob) record.coverBlob = s.coverBlob;
+                            songStore.put(record);
+                        }
                     });
                     const plStore = tx.objectStore('playlists');
                     Object.keys(playlists).forEach(name => {
@@ -1284,7 +1311,18 @@
                         if (results.length) {
                             results.forEach(item => {
                                 const url = URL.createObjectURL(item.blob);
-                                songsDB.push({ ...item, blobUrl: url });
+                                const songObj = {
+                                    id: item.id,
+                                    name: item.name,
+                                    artist: item.artist,
+                                    album: item.album || '',
+                                    blobUrl: url,
+                                    blob: item.blob,
+                                    favorite: item.favorite || false,
+                                    coverUrl: item.coverBlob ? URL.createObjectURL(item.coverBlob) : null,
+                                    coverBlob: item.coverBlob || null,
+                                };
+                                songsDB.push(songObj);
                             });
                             renderLibrary();
                             if (songsDB.length && currentSongIndex < 0) {
@@ -1303,27 +1341,46 @@
                 };
             }
 
-            function addMusicFiles(files) {
+            async function addMusicFiles(files) {
                 let added = 0;
-                Array.from(files).forEach(file => {
+                const total = files.length;
+                for (const file of files) {
                     if (file.type.includes('audio') || file.name.match(/\.(mp3|m4a|wav|ogg|flac|aac|wma)$/i)) {
                         const blob = file.slice(0, file.size, file.type);
                         const url = URL.createObjectURL(blob);
                         const id = Date.now() + Math.floor(Math.random() * 10000);
+                        let meta = { title: file.name.replace(/\.[^/.]+$/, ""), artist: 'Unknown Artist', album: '', coverUrl: null, coverBlob: null };
+                        try {
+                            const tags = await mm.parseBlob(blob);
+                            if (tags.common.title) meta.title = tags.common.title;
+                            if (tags.common.artist) meta.artist = tags.common.artist;
+                            if (tags.common.album) meta.album = tags.common.album;
+                            if (tags.common.picture && tags.common.picture.length) {
+                                const pic = tags.common.picture[0];
+                                const coverBlob = new Blob([pic.data], { type: pic.format });
+                                meta.coverUrl = URL.createObjectURL(coverBlob);
+                                meta.coverBlob = coverBlob;
+                            }
+                        } catch (e) {
+                            console.warn('Metadata parsing failed', file.name, e);
+                        }
                         songsDB.push({
                             id,
-                            name: file.name.replace(/\.[^/.]+$/, ""),
-                            artist: 'Unknown Artist',
+                            name: meta.title,
+                            artist: meta.artist,
+                            album: meta.album,
                             blobUrl: url,
                             blob,
+                            coverUrl: meta.coverUrl,
+                            coverBlob: meta.coverBlob,
                             favorite: false,
                         });
                         added++;
+                        renderLibrary(); // update UI as we add
+                        saveToIndexedDB();
                     }
-                });
+                }
                 if (added > 0) {
-                    renderLibrary();
-                    saveToIndexedDB();
                     showToast(`Added ${added} song${added > 1 ? 's' : ''}`);
                     haptic();
                 } else {
@@ -1419,7 +1476,7 @@
                 } else {
                     container.innerHTML = list.map(song => `
                         <div class="song-row" data-id="${song.id}">
-                            <div class="song-art"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg></div>
+                            <div class="song-art">${song.coverUrl ? `<img src="${song.coverUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:10px;">` : '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>'}</div>
                             <div class="song-details"><div class="song-name">${escapeHtml(song.name)}</div><div class="song-artist">${escapeHtml(song.artist)}</div></div>
                             <div class="three-dots" data-id="${song.id}">&#8943;</div>
                         </div>`).join('');
@@ -1445,7 +1502,7 @@
                 if (homeNav) homeNav.classList.add('active');
                 container.innerHTML = list.map(s => `
                     <div class="song-row" data-id="${s.id}">
-                        <div class="song-art"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg></div>
+                        <div class="song-art">${s.coverUrl ? `<img src="${s.coverUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:10px;">` : '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>'}</div>
                         <div class="song-details"><div class="song-name">${escapeHtml(s.name)}</div><div class="song-artist">${escapeHtml(s.artist)}</div></div>
                         <div class="three-dots" data-id="${s.id}">&#8943;</div>
                     </div>`).join('');
@@ -1570,6 +1627,21 @@
                 audio.addEventListener('playing', () => {
                     if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
                 });
+
+                // Keep alive in background
+                document.addEventListener('visibilitychange', () => {
+                    if (!document.hidden && audioCtx?.state === 'suspended') {
+                        audioCtx.resume();
+                    }
+                });
+
+                // Media Session handlers
+                if ('mediaSession' in navigator) {
+                    navigator.mediaSession.setActionHandler('play', () => audio.play());
+                    navigator.mediaSession.setActionHandler('pause', () => audio.pause());
+                    navigator.mediaSession.setActionHandler('previoustrack', () => document.getElementById('prevBtn').click());
+                    navigator.mediaSession.setActionHandler('nexttrack', () => document.getElementById('nextBtn').click());
+                }
             }
 
             function renderActivity() {
@@ -1583,7 +1655,7 @@
                 }
                 container.innerHTML = recentSongs.map(s => `
                     <div class="song-row" data-id="${s.id}">
-                        <div class="song-art"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg></div>
+                        <div class="song-art">${s.coverUrl ? `<img src="${s.coverUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:10px;">` : '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>'}</div>
                         <div class="song-details"><div class="song-name">${escapeHtml(s.name)}</div><div class="song-artist">${escapeHtml(s.artist)}</div></div>
                         <div class="three-dots" data-id="${s.id}">&#8943;</div>
                     </div>`).join('');
@@ -1644,6 +1716,19 @@
                 document.getElementById('moreNPOptions').addEventListener('click', () => {
                     if (currentSongIndex >= 0 && songsDB[currentSongIndex]) {
                         showBottomSheet(songsDB[currentSongIndex].id);
+                    }
+                });
+
+                // Swipe down to close now playing
+                let touchStartY = 0;
+                const npScreen = document.getElementById('nowPlayingScreen');
+                npScreen.addEventListener('touchstart', (e) => {
+                    touchStartY = e.touches[0].clientY;
+                });
+                npScreen.addEventListener('touchend', (e) => {
+                    const diff = e.changedTouches[0].clientY - touchStartY;
+                    if (diff > 60) {
+                        document.getElementById('closeNP').click();
                     }
                 });
             }
@@ -1828,7 +1913,7 @@
                         } else {
                             resultsDiv.innerHTML = filtered.map(s => `
                                 <div class="song-row" data-id="${s.id}">
-                                    <div class="song-art"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg></div>
+                                    <div class="song-art">${s.coverUrl ? `<img src="${s.coverUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:10px;">` : '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>'}</div>
                                     <div class="song-details"><div class="song-name">${highlightMatch(s.name, term)}</div><div class="song-artist">${highlightMatch(s.artist, term)}</div></div>
                                     <div class="three-dots" data-id="${s.id}">&#8943;</div>
                                 </div>`).join('');
@@ -1970,7 +2055,7 @@
                             Boolean);
                         container.innerHTML = list.map(s => `
                             <div class="song-row" data-id="${s.id}">
-                                <div class="song-art"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg></div>
+                                <div class="song-art">${s.coverUrl ? `<img src="${s.coverUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:10px;">` : '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>'}</div>
                                 <div class="song-details"><div class="song-name">${escapeHtml(s.name)}</div><div class="song-artist">${escapeHtml(s.artist)}</div></div>
                                 <div class="three-dots" data-id="${s.id}">&#8943;</div>
                             </div>`).join('');
@@ -1981,130 +2066,99 @@
                 document.getElementById('nowPlayingScreen').classList.remove('active');
             }
 
-            function setupInstallFlow() {
-                let deferredPrompt;
-                window.addEventListener('beforeinstallprompt', (e) => {
-                    e.preventDefault();
-                    deferredPrompt = e;
-                    document.getElementById('installBtn').style.display = 'block';
-                });
-                if (/iPhone|iPad/.test(navigator.userAgent)) {
-                    document.getElementById('iosInstruction').innerHTML =
-                        'Tap the Share button and select "Add to Home Screen"';
-                    document.getElementById('installBtn').style.display = 'none';
-                }
-                document.getElementById('installBtn').onclick = () => {
-                    if (deferredPrompt) {
-                        deferredPrompt.prompt();
-                        deferredPrompt.userChoice.then(() => {
-                            document.getElementById('installContainer').style.display = 'none';
-                            document.getElementById('appRoot').style.display = 'flex';
-                        });
-                    } else {
-                        document.getElementById('installContainer').style.display = 'none';
-                        document.getElementById('appRoot').style.display = 'flex';
+            // Handle file opens from outside the PWA
+            if ('launchQueue' in window) {
+                launchQueue.setConsumer(async (launchParams) => {
+                    if (!launchParams.files.length) return;
+                    document.getElementById('homeScreen').classList.add('active');
+                    document.getElementById('nowPlayingScreen').classList.remove('active');
+                    showToast(`Opening ${launchParams.files.length} file(s)...`);
+                    for (const fileHandle of launchParams.files) {
+                        const file = await fileHandle.getFile();
+                        addMusicFiles([file]);
                     }
-                };
-                if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone) {
-                    document.getElementById('installContainer').style.display = 'none';
-                    document.getElementById('appRoot').style.display = 'flex';
-                }
-                if (!document.getElementById('installContainer').style.display ||
-                    document.getElementById('installContainer').style.display !== 'none') {
-                    setTimeout(() => {
-                        if (!window.matchMedia('(display-mode: standalone)').matches && !window.navigator
-                            .standalone) {
-                            document.getElementById('appRoot').style.display = 'flex';
-                        }
-                    }, 1500);
-                }
+                });
             }
 
             function init() {
-            buildColorPalette();
-            applyTheme();
-            setupAudio();
-            setupNavigation();
-            setupControls();
-            setupSettings();
-            setupSearch();
-            setupFilterChips();
-            setupBottomSheet();
-            // Remove setupInstallFlow() call from here
-            loadActivity();
-            loadFromDB();
-            setTimeout(() => {
-                if (songsDB.length === 0) {
-                    document.getElementById('songListContainer').innerHTML =
-                        '<div class="empty-state"><div class="empty-icon">&#9835;</div><p>Your library is empty.</p><p style="font-size:12px;">Go to Settings &rarr; Manage Music Sources to add songs.</p></div>';
-                }
-            }, 800);
-            if (shuffleMode) document.getElementById('shuffleNP').classList.add('active-toggle');
-            if (repeatMode !== 'none') document.getElementById('loopNP').classList.add('active-toggle');
-        }
+                buildColorPalette();
+                applyTheme();
+                setupAudio();
+                setupNavigation();
+                setupControls();
+                setupSettings();
+                setupSearch();
+                setupFilterChips();
+                setupBottomSheet();
+                loadActivity();
+                loadFromDB();
+                setTimeout(() => {
+                    if (songsDB.length === 0) {
+                        document.getElementById('songListContainer').innerHTML =
+                            '<div class="empty-state"><div class="empty-icon">&#9835;</div><p>Your library is empty.</p><p style="font-size:12px;">Go to Settings &rarr; Manage Music Sources to add songs.</p></div>';
+                    }
+                }, 800);
+                if (shuffleMode) document.getElementById('shuffleNP').classList.add('active-toggle');
+                if (repeatMode !== 'none') document.getElementById('loopNP').classList.add('active-toggle');
+            }
 
-        init();
-    })();
+            init();
+        })();
 
-    // ✅ PWA Installation Code (only once, outside the IIFE)
-    let deferredPrompt;
+        // PWA Installation Code (outside IIFE to maintain scope)
+        let deferredPrompt;
 
-    window.addEventListener('beforeinstallprompt', (e) => {
-        e.preventDefault();
-        deferredPrompt = e;
-        const installContainer = document.getElementById('installContainer');
-        if (installContainer) {
-            installContainer.style.display = 'flex';
-        }
-    });
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            const installContainer = document.getElementById('installContainer');
+            if (installContainer) {
+                installContainer.style.display = 'flex';
+            }
+        });
 
-    // Install button handler
-    const installBtn = document.getElementById('installBtn');
-    if (installBtn) {
-        installBtn.onclick = async () => {
-            if (deferredPrompt) {
-                deferredPrompt.prompt();
-                const { outcome } = await deferredPrompt.userChoice;
-                if (outcome === 'accepted') {
-                    console.log('User accepted install');
+        const installBtn = document.getElementById('installBtn');
+        if (installBtn) {
+            installBtn.onclick = async () => {
+                if (deferredPrompt) {
+                    deferredPrompt.prompt();
+                    const { outcome } = await deferredPrompt.userChoice;
+                    if (outcome === 'accepted') {
+                        console.log('User accepted install');
+                        document.getElementById('installContainer').style.display = 'none';
+                        document.getElementById('appRoot').style.display = 'flex';
+                    }
+                    deferredPrompt = null;
+                } else {
                     document.getElementById('installContainer').style.display = 'none';
                     document.getElementById('appRoot').style.display = 'flex';
                 }
-                deferredPrompt = null;
-            } else {
-                // Fallback - already installed or not supported
-                document.getElementById('installContainer').style.display = 'none';
-                document.getElementById('appRoot').style.display = 'flex';
-            }
-        };
-    }
-
-    // Check if already installed
-    if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone) {
-        document.getElementById('installContainer').style.display = 'none';
-        document.getElementById('appRoot').style.display = 'flex';
-    }
-
-    window.addEventListener('appinstalled', () => {
-        console.log('PWA installed');
-        document.getElementById('installContainer').style.display = 'none';
-        document.getElementById('appRoot').style.display = 'flex';
-        deferredPrompt = null;
-    });
-
-    // iOS instruction
-    if (/iPhone|iPad/.test(navigator.userAgent)) {
-        const iosMsg = document.getElementById('iosInstruction');
-        if (iosMsg) {
-            iosMsg.innerHTML = 'Tap the Share button and select "Add to Home Screen"';
+            };
         }
-        if (installBtn) installBtn.style.display = 'none';
-    }
 
-    // Register service worker
-    if ('serviceWorker' in navigator) {
- navigator.serviceWorker.register('sw.js');
-    }
-</script>
+        if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone) {
+            document.getElementById('installContainer').style.display = 'none';
+            document.getElementById('appRoot').style.display = 'flex';
+        }
+
+        window.addEventListener('appinstalled', () => {
+            console.log('PWA installed');
+            document.getElementById('installContainer').style.display = 'none';
+            document.getElementById('appRoot').style.display = 'flex';
+            deferredPrompt = null;
+        });
+
+        if (/iPhone|iPad/.test(navigator.userAgent)) {
+            const iosMsg = document.getElementById('iosInstruction');
+            if (iosMsg) {
+                iosMsg.innerHTML = 'Tap the Share button and select "Add to Home Screen"';
+            }
+            if (installBtn) installBtn.style.display = 'none';
+        }
+
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js');
+        }
+    </script>
 </body>
 </html>
