@@ -2049,6 +2049,38 @@
 // Register service worker
 if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js');
+let deferredPrompt;
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  // Prevent Chrome 67+ from auto-prompting
+  e.preventDefault();
+  // Store the event for later use
+  deferredPrompt = e;
+  
+  // Show your custom install button
+  const installContainer = document.getElementById('installContainer');
+  if (installContainer) {
+    installContainer.style.display = 'flex';
+    document.getElementById('installBtn').onclick = async () => {
+      if (deferredPrompt) {
+        deferredPrompt.prompt();
+        const { outcome } = await deferredPrompt.userChoice;
+        if (outcome === 'accepted') {
+          console.log('User accepted install');
+        }
+        deferredPrompt = null;
+      }
+    };
+  }
+});
+
+// Hide custom install UI if already installed
+window.addEventListener('appinstalled', () => {
+  console.log('PWA installed');
+  const installContainer = document.getElementById('installContainer');
+  if (installContainer) installContainer.style.display = 'none';
+  deferredPrompt = null;
+});
 }
 
     </script>
