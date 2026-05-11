@@ -2021,69 +2021,90 @@
             }
 
             function init() {
-                buildColorPalette();
-                applyTheme();
-                setupAudio();
-                setupNavigation();
-                setupControls();
-                setupSettings();
-                setupSearch();
-                setupFilterChips();
-                setupBottomSheet();
-                setupInstallFlow();
-                loadActivity();
-                loadFromDB();
-                setTimeout(() => {
-                    if (songsDB.length === 0) {
-                        document.getElementById('songListContainer').innerHTML =
-                            '<div class="empty-state"><div class="empty-icon">&#9835;</div><p>Your library is empty.</p><p style="font-size:12px;">Go to Settings &rarr; Manage Music Sources to add songs.</p></div>';
-                    }
-                }, 800);
-                if (shuffleMode) document.getElementById('shuffleNP').classList.add('active-toggle');
-                if (repeatMode !== 'none') document.getElementById('loopNP').classList.add('active-toggle');
-            }
-
-            init();
-        })();
-
-let deferredPrompt;
-
-window.addEventListener('beforeinstallprompt', (e) => {
-  // Prevent Chrome 67+ from auto-prompting
-  e.preventDefault();
-  // Store the event for later use
-  deferredPrompt = e;
-  
-  // Show your custom install button
-  const installContainer = document.getElementById('installContainer');
-  if (installContainer) {
-    installContainer.style.display = 'flex';
-    document.getElementById('installBtn').onclick = async () => {
-      if (deferredPrompt) {
-        deferredPrompt.prompt();
-        const { outcome } = await deferredPrompt.userChoice;
-        if (outcome === 'accepted') {
-          console.log('User accepted install');
+            buildColorPalette();
+            applyTheme();
+            setupAudio();
+            setupNavigation();
+            setupControls();
+            setupSettings();
+            setupSearch();
+            setupFilterChips();
+            setupBottomSheet();
+            // Remove setupInstallFlow() call from here
+            loadActivity();
+            loadFromDB();
+            setTimeout(() => {
+                if (songsDB.length === 0) {
+                    document.getElementById('songListContainer').innerHTML =
+                        '<div class="empty-state"><div class="empty-icon">&#9835;</div><p>Your library is empty.</p><p style="font-size:12px;">Go to Settings &rarr; Manage Music Sources to add songs.</p></div>';
+                }
+            }, 800);
+            if (shuffleMode) document.getElementById('shuffleNP').classList.add('active-toggle');
+            if (repeatMode !== 'none') document.getElementById('loopNP').classList.add('active-toggle');
         }
+
+        init();
+    })();
+
+    // ✅ PWA Installation Code (only once, outside the IIFE)
+    let deferredPrompt;
+
+    window.addEventListener('beforeinstallprompt', (e) => {
+        e.preventDefault();
+        deferredPrompt = e;
+        const installContainer = document.getElementById('installContainer');
+        if (installContainer) {
+            installContainer.style.display = 'flex';
+        }
+    });
+
+    // Install button handler
+    const installBtn = document.getElementById('installBtn');
+    if (installBtn) {
+        installBtn.onclick = async () => {
+            if (deferredPrompt) {
+                deferredPrompt.prompt();
+                const { outcome } = await deferredPrompt.userChoice;
+                if (outcome === 'accepted') {
+                    console.log('User accepted install');
+                    document.getElementById('installContainer').style.display = 'none';
+                    document.getElementById('appRoot').style.display = 'flex';
+                }
+                deferredPrompt = null;
+            } else {
+                // Fallback - already installed or not supported
+                document.getElementById('installContainer').style.display = 'none';
+                document.getElementById('appRoot').style.display = 'flex';
+            }
+        };
+    }
+
+    // Check if already installed
+    if (window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone) {
+        document.getElementById('installContainer').style.display = 'none';
+        document.getElementById('appRoot').style.display = 'flex';
+    }
+
+    window.addEventListener('appinstalled', () => {
+        console.log('PWA installed');
+        document.getElementById('installContainer').style.display = 'none';
+        document.getElementById('appRoot').style.display = 'flex';
         deferredPrompt = null;
-      }
-    };
-  }
-});
+    });
 
-// Hide custom install UI if already installed
-window.addEventListener('appinstalled', () => {
-  console.log('PWA installed');
-  const installContainer = document.getElementById('installContainer');
-  if (installContainer) installContainer.style.display = 'none';
-  deferredPrompt = null;
-});
+    // iOS instruction
+    if (/iPhone|iPad/.test(navigator.userAgent)) {
+        const iosMsg = document.getElementById('iosInstruction');
+        if (iosMsg) {
+            iosMsg.innerHTML = 'Tap the Share button and select "Add to Home Screen"';
+        }
+        if (installBtn) installBtn.style.display = 'none';
+    }
 
-// Register service worker
-if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js');
-}
-
-    </script>
+    // Register service worker
+    if ('serviceWorker' in navigator) {
+ navigator.serviceWorker.register('sw.js');
+    }
+</script>
 </body>
 </html>
