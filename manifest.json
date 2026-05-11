@@ -12,5 +12,13 @@
       "sizes": "1024x1024",
       "type": "image/png"
     }
+  ],
+  "file_handlers": [
+    {
+      "action": "/",
+      "accept": {
+        "audio/*": [".mp3", ".m4a", ".wav", ".ogg", ".flac", ".aac", ".wma"]
+      }
+    }
   ]
 }
